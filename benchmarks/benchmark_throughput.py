@@ -368,19 +368,19 @@ def main(args: argparse.Namespace):
         vocab_size = tokenizer.vocab_size
         requests = []
         for _ in range(args.num_prompts):
-        # Synthesize a prompt with the given input length.
+            # Synthesize a prompt with the given input length.
             candidate_ids = [
                 random.randint(0, vocab_size - 1)
                 for _ in range(args.input_len)
             ]
-        # As tokenizer may add additional tokens like BOS, we need to try
-        # different lengths to get the desired input length.
+            # As tokenizer may add additional tokens like BOS, we need to try
+            # different lengths to get the desired input length.
             for _ in range(5):  # Max attempts to correct
                 candidate_prompt = tokenizer.decode(candidate_ids)
                 tokenized_len = len(tokenizer.encode(candidate_prompt))
 
                 if tokenized_len == args.input_len:
-                break
+                    break
 
                 # Adjust length based on difference
                 diff = args.input_len - tokenized_len
@@ -390,11 +390,11 @@ def main(args: argparse.Namespace):
                         for _ in range(diff)
                     ])
         else:
-                    candidate_ids = candidate_ids[:diff]
-            requests.append(
-                SampleRequest(prompt=candidate_prompt,
+            candidate_ids = candidate_ids[:diff]
+        requests.append(
+            SampleRequest(prompt=candidate_prompt,
                           prompt_len=args.input_len,
-                              expected_output_len=args.output_len))
+                          expected_output_len=args.output_len))
     else:
         requests = sample_requests(tokenizer, args)
 
