@@ -223,6 +223,47 @@ async def async_request_deepspeed_mii(
             pbar.update(1)
         return output
 
+async def async_request_ns(
+    request_func_input: RequestFuncInput,
+    pbar: Optional[tqdm] = None,
+) -> RequestFuncOutput:
+    async with aiohttp.ClientSession(timeout=AIOHTTP_TIMEOUT) as session:
+        assert request_func_input.best_of == 1
+
+        payload = {
+            "prompt": request_func_input.prompt,
+            "max_new_tokens": request_func_input.output_len,
+            "ignore_eos": False,
+        }
+        output = RequestFuncOutput()
+        output.prompt_len = request_func_input.prompt_len
+
+        # NOTE: DeepSpeed-MII doesn't support streaming as of Jan 28 2024,
+        # will use 0 as placeholder.
+        # See https://github.com/microsoft/DeepSpeed-MII/pull/311
+        output.ttft = 0
+
+        st = time.perf_counter()
+        try:
+            async with session.post(url=request_func_input.api_url,
+                                    json=payload) as response:
+                if response.status == 200:
+                    parsed_resp = await response.json()
+                    output.latency = time.perf_counter() - st
+                    output.generated_text = parsed_resp["text"][0]
+                    output.success = True
+                else:
+                    output.error = response.reason or ""
+                    output.success = False
+        except Exception:
+            output.success = False
+            exc_info = sys.exc_info()
+            output.error = "".join(traceback.format_exception(*exc_info))
+
+        if pbar:
+            pbar.update(1)
+        return output
+
 
 async def async_request_openai_completions(
     request_func_input: RequestFuncInput,
@@ -244,8 +285,6 @@ async def async_request_openai_completions(
             "stream": True,
             "ignore_eos": request_func_input.ignore_eos,
         }
-        if request_func_input.extra_body:
-            payload.update(request_func_input.extra_body)
         headers = {
             "Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}"
         }
@@ -340,8 +379,6 @@ async def async_request_openai_chat_completions(
             "stream": True,
             "ignore_eos": request_func_input.ignore_eos,
         }
-        if request_func_input.extra_body:
-            payload.update(request_func_input.extra_body)
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}",
@@ -429,6 +466,7 @@ def get_tokenizer(
 
 ASYNC_REQUEST_FUNCS = {
     "tgi": async_request_tgi,
+    "ns": async_request_ns,
     "vllm": async_request_openai_completions,
     "lmdeploy": async_request_openai_completions,
     "deepspeed-mii": async_request_deepspeed_mii,

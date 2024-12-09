@@ -5,6 +5,7 @@ import json
 import random
 import time
 from typing import List, Optional
+from neural_speed import Model
 
 import torch
 import uvloop
@@ -267,6 +268,76 @@ def run_hf(
     end = time.perf_counter()
     return end - start
 
+def run_ns(
+    requests: List[SampleRequest],
+    model: str,
+    tokenizer: PreTrainedTokenizerBase,
+    n: int,
+    max_batch_size: int,
+    trust_remote_code: bool,
+) -> float:
+    TOP_K = 1
+    INFERENCE_MAX_STREAMS = max_batch_size
+    INFERENCE_CONTEXT = 2048
+    INFERENCE_CHUNK = 1024
+    assert(n==1)
+    llm = Model(model)
+    llm.init(use_quant=True, threads=48, n_ctx=INFERENCE_CONTEXT, n_chunk=INFERENCE_CHUNK
+                    , n_stream = INFERENCE_MAX_STREAMS)
+    if tokenizer.pad_token_id is None:
+        # To enable padding in the HF backend.
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+
+    pbar = tqdm(total=len(requests))
+    start = time.perf_counter()
+    batch: List[str] = []
+    batch_max_new_tokens: List[int] = []
+    total_input_len = 0
+    total_inputids_len = 0
+    total_output_len = 0
+    raw_prompt=[]
+    raw_output_len=[]
+    for i in range(len(requests)):
+        prompt, prompt_len, output_len = requests[i].prompt, requests[i].prompt_len, requests[i].expected_output_len
+        # Add the prompt to the batch.
+        total_input_len += prompt_len
+        total_output_len += output_len
+        raw_prompt.append(prompt)
+        raw_output_len.append(output_len)
+    sorted_len, sorted_prompt = zip(*sorted(zip(raw_output_len, raw_prompt), reverse=True))
+    for i in range(len(requests)):
+        prompt, output_len = sorted_prompt[i], sorted_len[i]
+        batch.append(prompt)
+        batch_max_new_tokens.append(output_len)
+        if len(batch) < max_batch_size and i != len(requests) - 1:
+            continue
+        # Generate the sequences.
+        inputs = tokenizer(batch, return_tensors="pt", padding=True)
+        input_len = torch.sum(inputs.attention_mask)
+        total_inputids_len += input_len.item()
+        llm_outputs = llm.generateV2(
+            **inputs, 
+            max_new_tokens=batch_max_new_tokens, 
+            ignore_eos=1, 
+            temperature=1.0,
+            top_k=TOP_K
+        )
+
+        streams = llm.get_streams()
+        llm.free_streams(streams)
+        # Include the decoding time.
+        out=tokenizer.batch_decode(llm_outputs, skip_special_tokens=True)
+        pbar.update(len(batch))
+
+        # Clear the batch.
+        batch = []
+        batch_max_new_tokens = []
+    print('Average input lenght:',total_input_len/len(requests))
+    print('Average input_ids lenght:',total_inputids_len/len(requests))
+    print('Average output lenght:',total_output_len/len(requests))
+    end = time.perf_counter()
+    return end - start
+
 
 def run_mii(
     requests: List[SampleRequest],
@@ -297,19 +368,19 @@ def main(args: argparse.Namespace):
         vocab_size = tokenizer.vocab_size
         requests = []
         for _ in range(args.num_prompts):
-            # Synthesize a prompt with the given input length.
+        # Synthesize a prompt with the given input length.
             candidate_ids = [
                 random.randint(0, vocab_size - 1)
                 for _ in range(args.input_len)
             ]
-            # As tokenizer may add additional tokens like BOS, we need to try
-            # different lengths to get the desired input length.
+        # As tokenizer may add additional tokens like BOS, we need to try
+        # different lengths to get the desired input length.
             for _ in range(5):  # Max attempts to correct
                 candidate_prompt = tokenizer.decode(candidate_ids)
                 tokenized_len = len(tokenizer.encode(candidate_prompt))
 
                 if tokenized_len == args.input_len:
-                    break
+                break
 
                 # Adjust length based on difference
                 diff = args.input_len - tokenized_len
@@ -318,11 +389,11 @@ def main(args: argparse.Namespace):
                         random.randint(100, vocab_size - 100)
                         for _ in range(diff)
                     ])
-                else:
+        else:
                     candidate_ids = candidate_ids[:diff]
             requests.append(
                 SampleRequest(prompt=candidate_prompt,
-                              prompt_len=args.input_len,
+                          prompt_len=args.input_len,
                               expected_output_len=args.output_len))
     else:
         requests = sample_requests(tokenizer, args)
@@ -344,6 +415,10 @@ def main(args: argparse.Namespace):
     elif args.backend == "hf":
         assert args.tensor_parallel_size == 1
         elapsed_time = run_hf(requests, args.model, tokenizer, args.n,
+                              args.hf_max_batch_size, args.trust_remote_code)
+    elif args.backend == "ns":
+        assert args.tensor_parallel_size == 1
+        elapsed_time = run_ns(requests, args.model, tokenizer, args.n,
                               args.hf_max_batch_size, args.trust_remote_code)
     elif args.backend == "mii":
         elapsed_time = run_mii(requests, args.model, args.tensor_parallel_size,
@@ -380,7 +455,7 @@ if __name__ == "__main__":
     parser = FlexibleArgumentParser(description="Benchmark the throughput.")
     parser.add_argument("--backend",
                         type=str,
-                        choices=["vllm", "hf", "mii"],
+                        choices=["vllm", "hf", "mii",'ns'],
                         default="vllm")
     parser.add_argument("--dataset",
                         type=str,
