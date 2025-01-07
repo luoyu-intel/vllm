@@ -281,8 +281,8 @@ def run_ns(
     INFERENCE_CONTEXT = 2048
     INFERENCE_CHUNK = 1024
     assert(n==1)
-    llm = Model(model)
-    llm.init(use_quant=False, threads=48, n_ctx=INFERENCE_CONTEXT, n_chunk=INFERENCE_CHUNK
+    llm = Model(model, device='hpu')
+    llm.init(dtype='bf16', use_quant=False, threads=32, n_ctx=INFERENCE_CONTEXT, n_chunk=INFERENCE_CHUNK
                     , n_stream = INFERENCE_MAX_STREAMS)
     if tokenizer.pad_token_id is None:
         # To enable padding in the HF backend.
